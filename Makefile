@@ -1,4 +1,4 @@
-# Makefile for Hartree-Fock program
+# Makefile for program
 # Uses Libint2 and Eigen libraries
 
 # Compiler and flags
