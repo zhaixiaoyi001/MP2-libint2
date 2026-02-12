@@ -494,3 +494,129 @@ Matrix compute_2body_fock_general(const BasisSet& obs, const Matrix& D,
   // symmetrize the result and return
   return 0.5 * (G[0] + G[0].transpose());
 }
+
+
+/**
+ * 计算 MP2 相关能
+ * C_occ: 占据轨道系数 (n_ao x n_occ)
+ * C_virt: 虚拟轨道系数 (n_ao x n_virt)
+ * eps: 轨道能量向量
+ */
+double compute_mp2_in_memory(const BasisSet& obs, 
+                            const Matrix& C_occ, 
+                            const Matrix& C_virt, 
+                            const Eigen::VectorXd& eps) {
+    const auto n_ao = obs.nbf();
+    const auto n_occ = C_occ.cols();
+    const auto n_virt = C_virt.cols();
+    const auto nshells = obs.size();
+    auto shell2bf = obs.shell2bf();
+
+    // 1. 分配存储 (ia|jb) 积分的内存: O^2 * V^2
+    // 索引公式: (i * n_virt + a) * (n_occ * n_virt) + (j * n_virt + b)
+    std::vector<double> mo_ints(n_occ * n_virt * n_occ * n_virt, 0.0);
+    std::mutex mtx; // 用于多线程更新 mo_ints
+
+    std::cout << "Starting MP2 Integral Transformation..." << std::endl;
+
+    // 2. 第一步变换：(mu nu | lambda sigma) -> (mu nu | j b)
+    // 为了节省内存，我们每次处理一对 (mu, nu) 壳层块，计算其对应的所有 (j, b)
+    auto transform_lambda = [&](int thread_id) {
+        using libint2::Engine;
+        Engine engine(Operator::coulomb, obs.max_nprim(), obs.max_l(), 0);
+        engine.set_precision(1e-12);
+        const auto& buf = engine.results();
+
+        // 线程局部暂存器，减少锁竞争
+        // 这里简化逻辑，直接对壳层四重循环进行并行化
+        for (auto s1 = 0l, s1234 = 0l; s1 < nshells; ++s1) {
+            for (auto s2 = 0l; s2 < nshells; ++s2) {
+                
+                // 仅并行化最外层壳层对
+                if ((s1 * nshells + s2) % libint2::nthreads != thread_id) continue;
+
+                int n1 = obs[s1].size();
+                int n2 = obs[s2].size();
+                
+                // 构建 (mu nu | lambda sigma) 矩阵，其中行是 (mu,nu)，列是 (lambda,sigma)
+                // 但更简单的做法是固定 mu,nu，让 lambda,sigma 构成 N x N 矩阵
+                for (int f1 = 0; f1 < n1; ++f1) {
+                    for (int f2 = 0; f2 < n2; ++f2) {
+                        int mu = shell2bf[s1] + f1;
+                        int nu = shell2bf[s2] + f2;
+
+                        Matrix eri_ao = Matrix::Zero(n_ao, n_ao);
+
+                        // 内部循环计算所有 (lambda, sigma) 贡献给当前的 (mu, nu)
+                        for (auto s3 = 0l; s3 < nshells; ++s3) {
+                            for (auto s4 = 0l; s4 < nshells; ++s4) {
+                                engine.compute2<Operator::coulomb, BraKet::xx_xx, 0>(
+                                    obs[s1], obs[s2], obs[s3], obs[s4]);
+                                
+                                if (buf[0] == nullptr) continue;
+                                
+                                int n3 = obs[s3].size();
+                                int n4 = obs[s4].size();
+                                // 提取 buffer 中对应当前 f1, f2 的那一块
+                                for (int f3 = 0; f3 < n3; ++f3) {
+                                    for (int f4 = 0; f4 < n4; ++f4) {
+                                        int idx = ((f1 * n2 + f2) * n3 + f3) * n4 + f4;
+                                        eri_ao(shell2bf[s3] + f3, shell2bf[s4] + f4) = buf[0][idx];
+                                    }
+                                }
+                            }
+                        }
+
+                        // 执行变换: (mu nu | j b) = C_occ^T * ERI(mu,nu) * C_virt
+                        // 结果是一个 n_occ x n_virt 矩阵
+                        Matrix half_mo = C_occ.transpose() * eri_ao * C_virt;
+
+                        // 第二步变换：将 mu, nu 变换为 i, a
+                        // 这里我们直接收缩，因为我们已经拿到了完整的 (mu, nu | j b)
+                        for (int i = 0; i < n_occ; ++i) {
+                            for (int a = 0; a < n_virt; ++a) {
+                                double c_ia = C_occ(mu, i) * C_virt(nu, a);
+                                
+                                for (int j = 0; j < n_occ; ++j) {
+                                    for (int b = 0; b < n_virt; ++b) {
+                                        double val = c_ia * half_mo(j, b);
+                                        // 索引映射并累加到全局 mo_ints
+                                        size_t mo_idx = (size_t(i) * n_virt + a) * (n_occ * n_virt) + (j * n_virt + b);
+                                        
+                                        mtx.lock();
+                                        mo_ints[mo_idx] += val;
+                                        mtx.unlock();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    libint2::parallel_do(transform_lambda);
+
+    // 3. 计算 MP2 能量
+    // E = sum_{iajb} (ia|jb) * [2(ia|jb) - (ib|ja)] / (ei + ej - ea - eb)
+    double emp2 = 0.0;
+    for (int i = 0; i < n_occ; ++i) {
+        for (int j = 0; j < n_occ; ++j) {
+            for (int a = 0; a < n_virt; ++a) {
+                for (int b = 0; b < n_virt; ++b) {
+                    size_t idx1 = (size_t(i) * n_virt + a) * (n_occ * n_virt) + (j * n_virt + b);
+                    size_t idx2 = (size_t(i) * n_virt + b) * (n_occ * n_virt) + (j * n_virt + a);
+                    
+                    double iajb = mo_ints[idx1];
+                    double ibja = mo_ints[idx2];
+                    double denominator = eps(i) + eps(j) - eps(n_occ + a) - eps(n_occ + b);
+                    
+                    emp2 += iajb * (2.0 * iajb - ibja) / denominator;
+                }
+            }
+        }
+    }
+
+    return emp2;
+}
