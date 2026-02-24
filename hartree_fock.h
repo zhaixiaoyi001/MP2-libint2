@@ -1,5 +1,6 @@
 /*
  *  Original file: hartree-fock++.cc
+ *  Modified by Xiaoyi Zhai, code for MP2 energy was added.
  *  Copyright (C) 2004-2026 Edward F. Valeev
  *
  *  This file is part of Libint library.
@@ -153,6 +154,12 @@ std::tuple<Matrix, Matrix, size_t, double, double> gensqrtinv(
 
 // Two-index integral function
 Matrix compute_2body_2index_ints(const BasisSet& bs);
+
+// Calculate MP2 energy
+double cal_mp2_in_memory(const BasisSet& obs, 
+                            const Matrix& C_occ, 
+                            const Matrix& C_virt, 
+                            const Eigen::VectorXd& eps);
 
 // Parallelization utilities
 namespace libint2 {
