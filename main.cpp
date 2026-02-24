@@ -1,5 +1,6 @@
 /*
  *  Original file: hartree-fock++.cc
+ *  Modified by Xiaoyi Zhai, code for MP2 energy was added.
  *  Copyright (C) 2004-2026 Edward F. Valeev
  *
  *  This file is part of Libint library.
@@ -143,6 +144,7 @@ int main(int argc, char* argv[]) {
     Matrix D;
     Matrix C;
     Matrix C_occ;
+    Matrix C_virt;
     Matrix evals;
     {  // use SOAD as the guess density
       const auto tstart = std::chrono::high_resolution_clock::now();
@@ -285,6 +287,19 @@ int main(int argc, char* argv[]) {
 
     printf("** Hartree-Fock energy = %20.12f\n", ehf + enuc);
 
+    C_occ = C.leftCols(ndocc);
+    C_virt = C.rightCols(C.cols()-ndocc);
+    // Calculate MP2 energy
+
+    const auto tstart = std::chrono::high_resolution_clock::now();
+    auto emp2 = cal_mp2_in_memory(obs, C_occ, C_virt, evals);
+    const auto tstop = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double> time_elapsed = tstop - tstart;
+    
+    printf("** MP2 correction energy = %20.12f\n", emp2);
+    printf("** Total energy = %20.12f\n", ehf + enuc + emp2);
+    printf("** The MP2 computation completed in %10.5lf seconds.\n", time_elapsed.count());
+
     // try dumping orbs to a molden file
     try {
       Eigen::VectorXd occs(C.cols());
@@ -292,10 +307,10 @@ int main(int argc, char* argv[]) {
       for (size_t o = 0; o != ndocc; ++o) occs[o] = 2.0;
 
       libint2::molden::Export xport(atoms, obs, C, occs, evals);
-      const auto molden_file_name = "hf++.molden";
+      const auto molden_file_name = "hf.molden";
       std::ofstream molden_file(molden_file_name);
       xport.write(molden_file);
-      std::cout << "wrote orbitals to " << molden_file_name << std::endl;
+      std::cout << "wrote HF orbitals to " << molden_file_name << std::endl;
     } catch (std::logic_error& e) {
       if (std::strstr(e.what(), "molden::Export") == nullptr) throw e;
     }

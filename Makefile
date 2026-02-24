@@ -17,7 +17,7 @@ OBJS = $(SRCS:.cpp=.o)
 DEPS = hartree_fock.h
 
 # Target executable
-TARGET = hartree-fock++
+TARGET = MP2
 
 # Default target
 all: $(TARGET)
