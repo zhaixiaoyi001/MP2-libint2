@@ -514,16 +514,14 @@ double cal_mp2_in_memory(const BasisSet& obs,
     auto shell2bf = obs.shell2bf();
 
     // 1. 分配存储 (ia|jb) 积分的内存: O^2 * V^2
-    // 索引公式: (i * n_virt + a) * (n_occ * n_virt) + (j * n_virt + b)
-    // 即 i*O*V*V + a*O*V + j*V + b
-    std::vector<double> mo_ints(n_occ * n_virt * n_occ * n_virt, 0.0);
-    std::mutex mtx; // 用于多线程更新 mo_ints
+    const size_t mo_ints_size = n_occ * n_virt * n_occ * n_virt;
+    std::vector<double> mo_ints(mo_ints_size, 0.0);
 
     using libint2::nthreads;
     using libint2::Engine;
     std::vector<Engine> engines(nthreads);
     engines[0] = Engine(Operator::coulomb, obs.max_nprim(), obs.max_l(), 0);
-    engines[0].set_precision(max_engine_precision);
+    engines[0].set_precision(1e-14);
     std::cout << "Starting MP2 Integral Transformation..." << std::endl;
     std::cout << "will set Engine::precision = "
               << engines[0].precision() << std::endl;
@@ -536,6 +534,13 @@ double cal_mp2_in_memory(const BasisSet& obs,
     auto transform_lambda = [&](int thread_id) {
         auto& engine = engines[thread_id];
         const auto& buf = engine.results();
+        
+        // 每个线程使用自己的局部数组，避免锁竞争
+        std::vector<double> local_mo_ints(mo_ints_size, 0.0);
+        
+        // 预分配缓冲区，避免重复分配
+        Matrix eri_ao_buffer = Matrix::Zero(n_ao, n_ao);
+        Matrix half_mo_buffer(n_occ, n_virt);
 
         for (auto s1 = 0l; s1 < nshells; ++s1) {
             for (auto s2 = 0l; s2 < nshells; ++s2) {
@@ -552,23 +557,31 @@ double cal_mp2_in_memory(const BasisSet& obs,
                         int mu = shell2bf[s1] + f1;
                         int nu = shell2bf[s2] + f2;
 
-                        Matrix eri_ao = Matrix::Zero(n_ao, n_ao);
+                        // 清空缓冲区，而不是重新分配
+                        eri_ao_buffer.setZero();
 
                         // 内部循环计算所有 (lambda, sigma) 贡献给当前的 (mu, nu)
                         for (auto s3 = 0l; s3 < nshells; ++s3) {
+                            int bf3_first = shell2bf[s3];
+                            int n3 = obs[s3].size();
+                            
                             for (auto s4 = 0l; s4 < nshells; ++s4) {
                                 engine.compute2<Operator::coulomb, BraKet::xx_xx, 0>(
                                     obs[s1], obs[s2], obs[s3], obs[s4]);
                                 
                                 if (buf[0] == nullptr) continue;
                                 
-                                int n3 = obs[s3].size();
+                                int bf4_first = shell2bf[s4];
                                 int n4 = obs[s4].size();
+                                
                                 // 提取 buffer 对应当前 f1, f2 的值
+                                // 使用连续内存访问模式
                                 for (int f3 = 0; f3 < n3; ++f3) {
+                                    int lambda = bf3_first + f3;
                                     for (int f4 = 0; f4 < n4; ++f4) {
+                                        int sigma = bf4_first + f4;
                                         int idx = ((f1 * n2 + f2) * n3 + f3) * n4 + f4;
-                                        eri_ao(shell2bf[s3] + f3, shell2bf[s4] + f4) = buf[0][idx];
+                                        eri_ao_buffer(lambda, sigma) = buf[0][idx];
                                     }
                                 }
                             }
@@ -576,29 +589,40 @@ double cal_mp2_in_memory(const BasisSet& obs,
 
                         // 执行变换: (mu nu | j b) = C_occ^T (n_occ*n) * ERI(mu,nu) (n*n) * C_virt (n*n_virt)
                         // 结果为 n_occ x n_virt 矩阵 half_mo
-                        Matrix half_mo = C_occ.transpose() * eri_ao * C_virt;
+                        // 使用缓冲区，避免临时对象
+                        half_mo_buffer.noalias() = C_occ.transpose() * eri_ao_buffer * C_virt;
 
                         // 第二步变换：将 mu, nu 变换为 i, a
-                        // 直接收缩
+                        // 直接收缩，优化内存访问模式
+                        // 预计算 C_occ(mu, i) 和 C_virt(nu, a) 的乘积
                         for (int i = 0; i < n_occ; ++i) {
+                            double C_mu_i = C_occ(mu, i);
                             for (int a = 0; a < n_virt; ++a) {
-                                double c_ia = C_occ(mu, i) * C_virt(nu, a);
+                                double c_ia = C_mu_i * C_virt(nu, a);
                                 
+                                // 预计算 half_mo_buffer(j, b) 的访问
                                 for (int j = 0; j < n_occ; ++j) {
+                                    double* half_mo_row = half_mo_buffer.data() + j * n_virt;
                                     for (int b = 0; b < n_virt; ++b) {
-                                        double val = c_ia * half_mo(j, b);
-                                        // 索引映射并累加到全局 mo_ints
-                                        size_t mo_idx = (size_t(i) * n_virt + a) * (n_occ * n_virt) + (j * n_virt + b);
-                                        
-                                        mtx.lock();
-                                        mo_ints[mo_idx] += val;
-                                        mtx.unlock();
+                                        double val = c_ia * half_mo_row[b];
+                                        // 索引映射并累加到局部 mo_ints
+                                        // 使用更高效的计算方式
+                                        size_t mo_idx = ((size_t(i) * n_virt + a) * n_occ + j) * n_virt + b;
+                                        local_mo_ints[mo_idx] += val;
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+        
+        // 将局部数组合并到全局数组（需要同步）
+        #pragma omp critical
+        {
+            for (size_t idx = 0; idx < mo_ints_size; ++idx) {
+                mo_ints[idx] += local_mo_ints[idx];
             }
         }
     };
