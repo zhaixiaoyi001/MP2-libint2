@@ -521,16 +521,16 @@ double cal_mp2_in_memory(const BasisSet& obs,
     using libint2::Operator;
     using libint2::BraKet;
     
-    int nthreads = libint2::nthreads();
+    int nthreads = libint2::nthreads;
     std::vector<Engine> engines(nthreads);
     engines[0] = Engine(Operator::coulomb, obs.max_nprim(), obs.max_l(), 0);
     for (size_t i = 1; i != nthreads; ++i) engines[i] = engines[0];
 
-    std::cout << "Starting O(N^5) MP2 Transformation..." << std::endl;
+    std::cout << "Starting MP2 Transformation..." << std::endl;
 
     // --- 阶段一：半变换 (AO, AO | lambda, sigma) -> (AO, AO | j, b) ---
     // 复杂度：O(N^4) 积分计算 + O(N^2 * N^3) 变换 = O(N^5)
-    libint2::parallel_do([&](int thread_id) {
+    auto transform_lsjb = [&](int thread_id) {
         auto& engine = engines[thread_id];
         const auto& buf = engine.results();
 
@@ -581,12 +581,14 @@ double cal_mp2_in_memory(const BasisSet& obs,
                 }
             }
         }
-    });
+    };
+
+    libint2::parallel_do(transform_lsjb);
 
     // --- 阶段二：全变换 (mu, nu | j, b) -> (i, a | j, b) ---
     // 复杂度：O(OV * N^3) = O(N^5)
     std::vector<double> mo_ints(ov * ov, 0.0);
-    libint2::parallel_do([&](int thread_id) {
+    auto transform_all = [&](int thread_id) {
         for (size_t jb = 0; jb < ov; ++jb) {
             if (jb % nthreads != thread_id) continue;
 
@@ -606,7 +608,9 @@ double cal_mp2_in_memory(const BasisSet& obs,
                 mo_ints[ia * ov + jb] = M_jb.data()[ia];
             }
         }
-    });
+    };
+
+    libint2::parallel_do(transform_all);
 
     // --- 计算能量 (O(N^4) 循环) ---
     double emp2 = 0.0;
