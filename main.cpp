@@ -190,7 +190,7 @@ int main(int argc, char* argv[]) {
     /*** =========================== ***/
 
     const auto maxiter = 100;
-    const auto conv = 1e-12;
+    const auto conv = 1e-9;
     auto iter = 0;
     auto rms_error = 1.0;
     auto ediff_rel = 0.0;
@@ -285,7 +285,9 @@ int main(int argc, char* argv[]) {
 
     } while (((ediff_rel > conv) || (rms_error > conv)) && (iter < maxiter));
 
-    printf("** Hartree-Fock energy = %20.12f\n", ehf + enuc);
+    printf("** Hartree-Fock energy = %20.12f\n\n\n", ehf + enuc);
+    printf("*******************************************************\n");
+    printf("**Start MP2 calculation\n");
 
     C_occ = C.leftCols(ndocc);
     C_virt = C.rightCols(C.cols()-ndocc);

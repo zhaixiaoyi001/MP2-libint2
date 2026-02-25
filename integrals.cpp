@@ -529,51 +529,63 @@ double cal_mp2_in_memory(const BasisSet& obs,
     std::cout << "Starting MP2 Transformation..." << std::endl;
 
     // --- 阶段一：半变换 (AO, AO | lambda, sigma) -> (AO, AO | j, b) ---
-    // 复杂度：O(N^4) 积分计算 + O(N^2 * N^3) 变换 = O(N^5)
     auto transform_lsjb = [&](int thread_id) {
         auto& engine = engines[thread_id];
         const auto& buf = engine.results();
 
         for (auto s1 = 0l; s1 < nshells; ++s1) {
+            int n1 = obs[s1].size();
+            int bf1_start = shell2bf[s1];
+            
             for (auto s2 = 0l; s2 < nshells; ++s2) {
-                // 简单的负载均衡
+                // 按壳层分配负载
                 if ((s1 * nshells + s2) % nthreads != thread_id) continue;
+                
+                int n2 = obs[s2].size();
+                int bf2_start = shell2bf[s2];
 
-                // 构造当前 shell pair (s1, s2) 对应的 AO 积分矩阵 [N_ao x N_ao]
-                Matrix eri_ao_block = Matrix::Zero(n_ao, n_ao);
-                int n1 = obs[s1].size(); int n2 = obs[s2].size();
-                int bf1_start = shell2bf[s1]; int bf2_start = shell2bf[s2];
+                // 为当前 (s1, s2) 壳层对下的所有 (mu, nu) 基函数对分配 V_munu 缓存
+                // 大小为 n1 * n2，每个元素是一个 N_ao x N_ao 的矩阵
+                std::vector<Matrix> V_munu_list(n1 * n2, Matrix::Zero(n_ao, n_ao));
 
-                for (int f1 = 0; f1 < n1; ++f1) {
-                    for (int f2 = 0; f2 < n2; ++f2) {
-                        int mu = bf1_start + f1;
-                        int nu = bf2_start + f2;
-
-                        // 填充 lambda, sigma 对应的 N_ao x N_ao 矩阵
-                        Matrix V_munu = Matrix::Zero(n_ao, n_ao);
-                        for (auto s3 = 0l; s3 < nshells; ++s3) {
-                            for (auto s4 = 0l; s4 < nshells; ++s4) {
-                                engine.compute2<Operator::coulomb, BraKet::xx_xx, 0>(
+                // 1. 遍历 s3, s4，计算积分并拼装完整的 V_munu
+                for (auto s3 = 0l; s3 < nshells; ++s3) {
+                    int n3 = obs[s3].size();
+                    int bf3_start = shell2bf[s3];
+                    for (auto s4 = 0l; s4 < nshells; ++s4) {
+                        int n4 = obs[s4].size(); 
+                        int bf4_start = shell2bf[s4];
+                        
+                        // 积分计算仅执行一次
+                        engine.compute2<Operator::coulomb, BraKet::xx_xx, 0>(
                                     obs[s1], obs[s2], obs[s3], obs[s4]);
-                                const auto* buf_ptr = buf[0];
-                                if (buf_ptr == nullptr) continue;
+                        const auto* buf_ptr = buf[0];
+                        if (buf_ptr == nullptr) continue;
 
-                                int n3 = obs[s3].size();
-                                int n4 = obs[s4].size();
-                                int bf3_start = shell2bf[s3]; 
-                                int bf4_start = shell2bf[s4];
-
+                        // 将积分数据分发到对应的 V_munu 矩阵中
+                        for (int f1 = 0; f1 < n1; ++f1) {
+                            for (int f2 = 0; f2 < n2; ++f2) {
+                                int f12_idx = f1 * n2 + f2;
                                 for (int f3 = 0; f3 < n3; ++f3) {
                                     for (int f4 = 0; f4 < n4; ++f4) {
-                                        // 提取当前 (f1, f2) 对应的积分
-                                        V_munu(bf3_start + f3, bf4_start + f4) = 
+                                        V_munu_list[f12_idx](bf3_start + f3, bf4_start + f4) = 
                                             buf_ptr[(f1 * n2 + f2) * (n3 * n4) + (f3 * n4 + f4)];
                                     }
                                 }
                             }
                         }
+                    }
+                }
+
+                // 2. 积分拼装完成后，再进行矩阵乘法（每个 mu, nu 对仅执行一次）
+                for (int f1 = 0; f1 < n1; ++f1) {
+                    int mu = bf1_start + f1;
+                    for (int f2 = 0; f2 < n2; ++f2) {
+                        int nu = bf2_start + f2;
+                        int f12_idx = f1 * n2 + f2;
+
                         // (mu, nu | lambda, sigma) -> (mu, nu | j, b)
-                        Matrix B_munu = C_occ.transpose() * V_munu * C_virt;
+                        Matrix B_munu = C_occ.transpose() * V_munu_list[f12_idx] * C_virt;
                         
                         // 将结果拷入连续内存
                         memcpy(&half_mo[(mu * n_ao + nu) * ov], B_munu.data(), ov * sizeof(double));
