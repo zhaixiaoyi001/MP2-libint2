@@ -532,6 +532,13 @@ double cal_mp2_in_memory(const BasisSet& obs,
     auto transform_lsjb = [&](int thread_id) {
         auto& engine = engines[thread_id];
         const auto& buf = engine.results();
+        
+        // 每个线程使用自己的局部数组，避免锁竞争
+        std::vector<double> local_mo_ints(mo_ints_size, 0.0);
+        
+        // 预分配缓冲区，避免重复分配
+        Matrix eri_ao_buffer = Matrix::Zero(n_ao, n_ao);
+        Matrix half_mo_buffer(n_occ, n_virt);
 
         for (auto s1 = 0l; s1 < nshells; ++s1) {
             int n1 = obs[s1].size();
@@ -567,6 +574,7 @@ double cal_mp2_in_memory(const BasisSet& obs,
                             for (int f2 = 0; f2 < n2; ++f2) {
                                 int f12_idx = f1 * n2 + f2;
                                 for (int f3 = 0; f3 < n3; ++f3) {
+                                    int lambda = bf3_first + f3;
                                     for (int f4 = 0; f4 < n4; ++f4) {
                                         V_munu_list[f12_idx](bf3_start + f3, bf4_start + f4) = 
                                             buf_ptr[(f1 * n2 + f2) * (n3 * n4) + (f3 * n4 + f4)];
@@ -591,6 +599,14 @@ double cal_mp2_in_memory(const BasisSet& obs,
                         memcpy(&half_mo[(mu * n_ao + nu) * ov], B_munu.data(), ov * sizeof(double));
                     }
                 }
+            }
+        }
+        
+        // 将局部数组合并到全局数组（需要同步）
+        #pragma omp critical
+        {
+            for (size_t idx = 0; idx < mo_ints_size; ++idx) {
+                mo_ints[idx] += local_mo_ints[idx];
             }
         }
     };
