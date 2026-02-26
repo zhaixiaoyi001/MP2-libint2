@@ -155,6 +155,10 @@ std::tuple<Matrix, Matrix, size_t, double, double> gensqrtinv(
 // Two-index integral function
 Matrix compute_2body_2index_ints(const BasisSet& bs);
 
+std::vector<double> ao2mo_incore_all(const BasisSet& obs,
+                                    const Matrix& C_occ,
+                                    const Matrix& C_virt,
+                                    const Eigen::VectorXd& eps);
 // Calculate MP2 energy
 double cal_mp2_in_memory(const BasisSet& obs, 
                             const Matrix& C_occ, 

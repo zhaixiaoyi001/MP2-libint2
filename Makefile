@@ -12,7 +12,7 @@ LDFLAGS = -fopenmp
 LDLIBS = -L/home/zhaixy/libint/libint2/lib -lint2 -lpthread
 
 # Source files
-SRCS = main.cpp utils.cpp integrals.cpp linalg.cpp globals.cpp
+SRCS = main.cpp utils.cpp integrals.cpp linalg.cpp globals.cpp ao2mo.cpp
 OBJS = $(SRCS:.cpp=.o)
 DEPS = hartree_fock.h
 
@@ -48,3 +48,4 @@ utils.o: hartree_fock.h
 integrals.o: hartree_fock.h
 linalg.o: hartree_fock.h
 globals.o: hartree_fock.h
+ao2mo.o: hartree_fock.h
