@@ -1,6 +1,6 @@
 /*
  *  Original file: hartree-fock++.cc
- *  Modified by Xiaoyi Zhai, code for MP2 energy was added.
+ *  Modified by Xiaoyi Zhai, code for MP2 energy calculation was added.
  *  Copyright (C) 2004-2026 Edward F. Valeev
  *
  *  This file is part of Libint library.
@@ -512,7 +512,7 @@ double cal_mp2_in_memory(const BasisSet& obs,
     const auto n_virt = C_virt.cols();
     const size_t ov = n_occ * n_virt;
     
-    auto mo_ints = ao2mo_incore_all(obs, C_occ, C_virt, eps);
+    auto mo_ints = ao2mo_incore_all(obs, C_occ, C_virt);
 
     // --- 计算能量 (O(N^4) 循环) ---
     std::cout << "Starting MP2 Energy Calculation..." << std::endl;
@@ -530,5 +530,80 @@ double cal_mp2_in_memory(const BasisSet& obs,
             }
         }
     }
+    return emp2;
+}
+
+
+// 分批计算，计算复杂度换空间复杂度，解决内存问题
+// max_memory: GB
+double cal_mp2_batch(const BasisSet& obs, 
+                         const Matrix& C_occ, 
+                         const Matrix& C_virt, 
+                         const Eigen::VectorXd& eps,
+                         const int max_memory) {
+    const auto n_ao = obs.nbf();
+    const auto n_occ = C_occ.cols();
+    const auto n_virt = C_virt.cols();
+    const size_t ov = n_occ * n_virt;
+
+    // 考虑 half_mo 、mo_ints 以及临时变量占用的内存
+    size_t mem_per_b = (size_t)n_occ * (n_ao * n_ao + n_occ * n_virt) * 8;
+    size_t available_mem = (size_t)max_memory * 1024 * 1024 * 1024 * 0.8; // 留 20% 给临时变量
+    size_t batch_size = available_mem / mem_per_b;
+    if (batch_size < 1) batch_size = 1;
+    if (batch_size > n_virt) batch_size = n_virt;
+    const size_t o_batch = n_occ * batch_size;
+    const size_t batch = n_virt / batch_size;
+    const size_t last_batch_size = n_virt % batch_size;
+    printf("---batch_size = %d, batch = %d, last_batch_size = %d.\n", batch_size, batch, last_batch_size);
+    
+    double emp2 = 0.0;
+
+    for (auto batch_number = 0; batch_number < batch; ++batch_number) {
+        const Matrix& C_virt_batch = C_virt.middleCols(batch_number * batch_size, batch_size);
+        auto mo_ints = ao2mo_incore_batch(obs, C_occ, C_virt, C_virt_batch);
+
+        // --- 计算能量 (O(N^4) 循环) ---
+        std::cout << "Starting MP2 Energy Calculation..." << std::endl;
+        double emp2_batch = 0.0;
+        #pragma omp parallel for reduction(+:emp2_batch) collapse(2)
+        for (int i = 0; i < n_occ; ++i) {
+            for (int j = 0; j < n_occ; ++j) {
+                for (int a = 0; a < n_virt; ++a) {
+                    for (int b = 0; b < batch_size; ++b) {
+                        int b_global = b + batch_number * batch_size;
+                        double iajb = mo_ints[(i * n_virt + a) * o_batch + (j * batch_size + b)];
+                        double jaib = mo_ints[(j * n_virt + a) * o_batch + (i * batch_size + b)]; //利用对称性索引
+                        double den = eps(i) + eps(j) - eps(n_occ + a) - eps(n_occ + b_global);
+                        emp2_batch += iajb * (2.0 * iajb - jaib) / den;
+                    }
+                }
+            }
+        }
+        emp2 += emp2_batch;
+    }
+
+    if (last_batch_size > 0) {
+        const Matrix& C_virt_batch = C_virt.middleCols(batch * batch_size, last_batch_size);
+        auto mo_ints = ao2mo_incore_batch(obs, C_occ, C_virt, C_virt_batch);
+
+        double emp2_batch = 0.0;
+        #pragma omp parallel for reduction(+:emp2_batch) collapse(2)
+        for (int i = 0; i < n_occ; ++i) {
+            for (int j = 0; j < n_occ; ++j) {
+                for (int a = 0; a < n_virt; ++a) {
+                    for (int b = 0; b < last_batch_size; ++b) {
+                        int b_global = b + batch * batch_size;
+                        double iajb = mo_ints[(i * n_virt + a) * n_occ * last_batch_size + (j * last_batch_size + b)];
+                        double jaib = mo_ints[(j * n_virt + a) * n_occ * last_batch_size + (i * last_batch_size + b)];
+                        double den = eps(i) + eps(j) - eps(n_occ + a) - eps(n_occ + b_global);
+                        emp2_batch += iajb * (2.0 * iajb - jaib) / den;
+                    }
+                }
+            }
+        }
+        emp2 += emp2_batch;
+    }
+    
     return emp2;
 }

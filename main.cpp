@@ -1,6 +1,6 @@
 /*
  *  Original file: hartree-fock++.cc
- *  Modified by Xiaoyi Zhai, code for MP2 energy was added.
+ *  Modified by Xiaoyi Zhai, code for MP2 energy calculation was added.
  *  Copyright (C) 2004-2026 Edward F. Valeev
  *
  *  This file is part of Libint library.
@@ -294,7 +294,7 @@ int main(int argc, char* argv[]) {
     // Calculate MP2 energy
 
     const auto tstart = std::chrono::high_resolution_clock::now();
-    auto emp2 = cal_mp2_in_memory(obs, C_occ, C_virt, evals);
+    auto emp2 = cal_mp2_batch(obs, C_occ, C_virt, evals, 80);
     const auto tstop = std::chrono::high_resolution_clock::now();
     const std::chrono::duration<double> time_elapsed = tstop - tstart;
     

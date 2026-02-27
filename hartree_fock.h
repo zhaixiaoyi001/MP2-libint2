@@ -1,6 +1,6 @@
 /*
  *  Original file: hartree-fock++.cc
- *  Modified by Xiaoyi Zhai, code for MP2 energy was added.
+ *  Modified by Xiaoyi Zhai, code for MP2 energy calculation was added.
  *  Copyright (C) 2004-2026 Edward F. Valeev
  *
  *  This file is part of Libint library.
@@ -157,13 +157,24 @@ Matrix compute_2body_2index_ints(const BasisSet& bs);
 
 std::vector<double> ao2mo_incore_all(const BasisSet& obs,
                                     const Matrix& C_occ,
+                                    const Matrix& C_virt);
+
+std::vector<double> ao2mo_incore_batch(const BasisSet& obs,
+                                    const Matrix& C_occ,
                                     const Matrix& C_virt,
-                                    const Eigen::VectorXd& eps);
+                                    const Matrix& C_virt_batch);
+
 // Calculate MP2 energy
 double cal_mp2_in_memory(const BasisSet& obs, 
                             const Matrix& C_occ, 
                             const Matrix& C_virt, 
                             const Eigen::VectorXd& eps);
+
+double cal_mp2_batch(const BasisSet& obs, 
+                         const Matrix& C_occ, 
+                         const Matrix& C_virt, 
+                         const Eigen::VectorXd& eps,
+                         const int max_memory);
 
 // Parallelization utilities
 namespace libint2 {
