@@ -548,7 +548,7 @@ double cal_mp2_batch(const BasisSet& obs,
 
     // 考虑 half_mo 、mo_ints 以及临时变量占用的内存
     size_t mem_per_b = (size_t)n_occ * (n_ao * n_ao + n_occ * n_virt) * 8;
-    size_t available_mem = (size_t)max_memory * 1024 * 1024 * 1024 * 0.8; // 留 20% 给临时变量
+    size_t available_mem = (size_t)max_memory * 1024 * 1024 * 1024 * 0.9; // 留 10% 给临时变量
     size_t batch_size = available_mem / mem_per_b;
     if (batch_size < 1) batch_size = 1;
     if (batch_size > n_virt) batch_size = n_virt;
@@ -557,14 +557,14 @@ double cal_mp2_batch(const BasisSet& obs,
     const size_t last_batch_size = n_virt % batch_size;
     printf("---batch_size = %d, batch = %d, last_batch_size = %d.\n", batch_size, batch, last_batch_size);
     
+    // --- 计算能量 ---
+    std::cout << "Starting MP2 Energy Calculation..." << std::endl;
     double emp2 = 0.0;
 
     for (auto batch_number = 0; batch_number < batch; ++batch_number) {
         const Matrix& C_virt_batch = C_virt.middleCols(batch_number * batch_size, batch_size);
         auto mo_ints = ao2mo_incore_batch(obs, C_occ, C_virt, C_virt_batch);
 
-        // --- 计算能量 (O(N^4) 循环) ---
-        std::cout << "Starting MP2 Energy Calculation..." << std::endl;
         double emp2_batch = 0.0;
         #pragma omp parallel for reduction(+:emp2_batch) collapse(2)
         for (int i = 0; i < n_occ; ++i) {
