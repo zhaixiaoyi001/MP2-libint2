@@ -534,7 +534,7 @@ double cal_mp2_in_memory(const BasisSet& obs,
 }
 
 
-// 分批计算，计算复杂度换空间复杂度，解决内存问题
+// 分批计算，时间复杂度换空间复杂度，解决内存问题
 // max_memory: GB
 double cal_mp2_batch(const BasisSet& obs, 
                          const Matrix& C_occ, 
