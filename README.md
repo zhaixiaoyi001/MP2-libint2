@@ -79,13 +79,19 @@ MP2
 
 # Running the Program
 
-Example:
+set parallelism
+
+```
+export LIBINT_NUM_THREADS=20
+```
+
+run example:
 
 ```
 ./MP2 h2o.xyz aug-cc-pVTZ
 ```
 
-Or:
+or:
 
 ```
 ./MP2 DPPBz.xyz def2-SVP
